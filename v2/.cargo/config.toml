@@ -1,6 +1,14 @@
+# .cargo/config.toml
+
 [build]
-target = "i686-none.json"
+# Définit la cible par défaut pour la compilation de ce projet.
+# x86_64-unknown-none est la cible standard pour les OS 64 bits bare metal.
+target = "x86_64-unknown-none"
 
 [unstable]
-build-std = ["core", "compiler_builtins"]
+# Ces options permettent de compiler les crates `core`, `compiler_builtins`, et `alloc`
+# avec le reste de ton code, ce qui est nécessaire pour un environnement no_std
+# qui veut quand même utiliser ces crates fondamentales.
+# `alloc` est inclus ici si tu prévois d'utiliser des allocations dynamiques (tas).
+build-std = ["core", "compiler_builtins", "alloc"]
 build-std-features = ["compiler-builtins-mem"]

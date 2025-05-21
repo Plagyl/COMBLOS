@@ -3,13 +3,35 @@ name = "MONCOMBLE_OS"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+bootloader = "0.9.23"
+volatile = "0.2.7"
+spin = "0.9.8"
+x86_64 = "0.14.11"
+lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
+
+uart_16550 = "0.3.0"        # Pour src/serial.rs
+pc-keyboard = "0.7.0"       # Pour src/keyboard.rs
+pic8259 = "0.10.4"          # Pour src/interrupts.rs
+conquer-once = { version = "0.4.0", default-features = false } # Pour src/keyboard.rs
+# crossbeam-queue est utilisé par keyboard.rs.
+# La feature "alloc" est nécessaire si ArrayQueue l'exige pour certaines opérations
+# ou si d'autres parties de crossbeam que tu pourrais utiliser en ont besoin.
+# Étant donné que tu as un allocateur global maintenant, garder "alloc" est plus sûr.
+crossbeam-queue = { version = "0.3.8", default-features = false, features = ["alloc"] }
+
+
 [profile.dev]
 panic = "abort"
 
 [profile.release]
 panic = "abort"
 
-[[bin]]
-name = "MONCOMBLE_OS"
-
-[dependencies]
+[package.metadata.bootimage]
+test-args = [
+    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+    "-serial", "stdio",
+    "-display", "none"
+]
+test-success-exit-code = 33
+test-timeout = 300

@@ -1,102 +1,195 @@
+// src/main.rs
+
 #![no_std]
 #![no_main]
+#![feature(custom_test_frameworks)]
+#![feature(abi_x86_interrupt)]
 
-mod panic;
-mod vga;
-mod keyboard;
-mod interrupts;
-mod shell;
-mod memory;
+extern crate alloc;
 
-// Point d'entrée avec attribut section pour le linker
+// use core::panic::PanicInfo; // Supprimé, car panic_handler est dans panic.rs
+use spin::Mutex;
+
+// --- Déclaration de tes modules ---
+pub mod gdt;
+pub mod interrupts;
+pub mod keyboard;
+pub mod memory;
+pub mod panic; // Ajouté pour s'assurer que panic.rs est inclus
+pub mod serial;
+pub mod shell;
+pub mod vga_buffer;
+
+// ... (le reste de main.rs comme dans la réponse précédente où il compilait avec des warnings)
+//       Assure-toi que les macros print/println/serial_print/serial_println sont là,
+//       l'allocateur global, kernel_main, hlt_loop, et la partie test.
+//       JE NE RÉPÈTE PAS TOUT POUR LA CONCISION.
+//       La seule différence est la suppression de l'import PanicInfo et l'ajout de `pub mod panic;`.
+
+// COPIE LE RESTE DE main.rs DE LA RÉPONSE PRÉCEDENTE où il compilait avec des warnings,
+// ET APPLIQUE JUSTE LES DEUX CHANGEMENTS CI-DESSUS (suppression de `use ... PanicInfo` et ajout de `pub mod panic;`).
+
+// Pour être explicite, voici la section des `pub mod` corrigée :
+// pub mod gdt;
+// pub mod interrupts;
+// pub mod keyboard;
+// pub mod memory;
+// pub mod panic; // <= LIGNE AJOUTÉE
+// pub mod serial;
+// pub mod shell;
+// pub mod vga_buffer;
+
+// Le reste du fichier (allocateur, macros, kernel_main, hlt_loop, tests)
+// reste identique à la version précédente qui compilait avec des warnings.
+// (Celle que tu as utilisée pour obtenir la sortie avec l'erreur `#[panic_handler]` function required)
+
+// --- Définition de l'allocateur global ---
+#[global_allocator]
+static ALLOCATOR: LockedSlabAllocator =
+    LockedSlabAllocator(Mutex::new(memory::slab_allocator::SlabAllocator::new()));
+
+pub struct LockedSlabAllocator(Mutex<memory::slab_allocator::SlabAllocator>);
+
+unsafe impl core::alloc::GlobalAlloc for LockedSlabAllocator {
+    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+        let mut allocator = self.0.lock();
+        match allocator.allocate(layout.size()) {
+            Some(ptr) => ptr,
+            None => {
+                // Temporairement, on ne logue rien ici pour éviter des dépendances
+                // si le serial_println n'est pas encore 100% fonctionnel dans tous les contextes.
+                core::ptr::null_mut()
+            }
+        }
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, _layout: core::alloc::Layout) {
+        let mut allocator = self.0.lock();
+        allocator.deallocate(ptr);
+    }
+}
+
+// --- Macros pour l'affichage ---
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => ($crate::vga_buffer::_print(format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! println {
+    () => ($crate::print!("\n"));
+    ($($arg:tt)*) => ($crate::print!("{}\n", format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! serial_print {
+    ($($arg:tt)*) => {
+        $crate::serial::_print(format_args!($($arg)*));
+    };
+}
+
+#[macro_export]
+macro_rules! serial_println {
+    () => ($crate::serial_print!("\n"));
+    ($fmt:expr) => ($crate::serial_print!(concat!($fmt, "\n")));
+    ($fmt:expr, $($arg:tt)*) => ($crate::serial_print!(
+        concat!($fmt, "\n"), $($arg)*));
+}
+
+// --- Point d'entrée du noyau ---
 #[no_mangle]
-#[link_section = ".text._start"]
-pub extern "C" fn _start() -> ! {
-    // Clear the screen first
-    vga::clear_screen();
-    
-    // Display boot message
-    vga::println("MONCOMBLE OS RUST BOOT OK!");
-    
-    // Initialize keyboard only - no interrupts for now
-    keyboard::init();
-    
-    vga::println("Testing keyboard input...");
-    vga::println("Press any key to continue...");
-    
-    // Direct keyboard debug area
-    write_debug_message("Waiting for key press...");
-    
-    // Spin while waiting for key input
-    let mut key_pressed = false;
-    let mut counter = 0;
-    
-    while !key_pressed {
-        // Test direct keyboard input
-        if let Some(key) = keyboard::read_char() {
-            // Print the key
-            write_debug_message("Key detected!");
-            vga::print("Key pressed: ");
-            vga::putchar(key);
-            vga::println("");
-            key_pressed = true;
-        }
-        
-        // Visual feedback to show we're running
-        counter += 1;
-        if counter % 100000 == 0 {
-            update_progress_indicator(counter / 100000);
-        }
+pub extern "C" fn kernel_main() -> ! {
+    serial::init_serial();
+    serial_println!("Port serie initialise.");
+
+    gdt::init();
+    serial_println!("GDT initialise.");
+
+    interrupts::init_idt();
+    // Assurez-vous que les PICs sont initialisés, soit dans init_idt, soit ici :
+    // unsafe { interrupts::PICS.lock().initialize(); }
+    serial_println!("IDT initialisee.");
+
+    keyboard::init_keyboard();
+    serial_println!("File d'attente clavier initialisee.");
+
+    const HEAP_START_ADDRESS: usize = 0x400000;
+    const HEAP_SIZE_BYTES: usize    = 256 * 1024;
+
+    unsafe {
+        ALLOCATOR.0.lock().init(HEAP_START_ADDRESS, HEAP_SIZE_BYTES);
     }
-    
-    vga::println("Initializing shell...");
-    
-    // Start the shell
-    let mut shell = shell::Shell::new();
-    shell.run();
-    
-    // This should never be reached, but just in case
+    serial_println!(
+        "Allocateur Slab initialise. Heap de {} KiB a partir de {:#x}",
+        HEAP_SIZE_BYTES / 1024,
+        HEAP_START_ADDRESS
+    );
+
+    use alloc::boxed::Box;
+    use alloc::vec::Vec;
+
+    serial_println!("Test d'allocation Box::new(42)...");
+    let heap_value = Box::new(42);
+    serial_println!("  heap_value at {:p} -> {}", heap_value, *heap_value);
+    drop(heap_value);
+    serial_println!("  Box::new(42) alloue et dealloue.");
+
+    serial_println!("Test d'allocation d'un vecteur...");
+    let mut vec_test = Vec::new();
+    for i in 0..5 {
+        vec_test.push(i);
+    }
+    serial_println!("  Vecteur: {:?}", vec_test);
+    serial_println!("Tests d'allocateur termines.");
+
+    x86_64::instructions::interrupts::enable();
+    serial_println!("Interruptions activees.");
+
+    println!("Bienvenue dans MONCOMBLE OS - v2!");
+    println!("Tapez 'help' pour les commandes.");
+
+    shell::shell_run();
+
+    hlt_loop();
+}
+
+pub fn hlt_loop() -> ! {
     loop {
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack));
-        }
+        x86_64::instructions::hlt();
     }
 }
 
-// Write debug message at the bottom of the screen
-fn write_debug_message(msg: &str) {
-    unsafe {
-        let vga_buffer = 0xB8000 as *mut u8;
-        let row = 23;
-        let col = 0;
-        let pos = (row * 80 + col) * 2;
-        
-        // Clear the line first
-        for i in 0..80 {
-            *vga_buffer.add(pos + i * 2) = b' ';
-            *vga_buffer.add(pos + i * 2 + 1) = 0x07;
-        }
-        
-        // Write the message
-        for (i, &byte) in msg.as_bytes().iter().enumerate() {
-            *vga_buffer.add(pos + i * 2) = byte;
-            *vga_buffer.add(pos + i * 2 + 1) = 0x0F; // White on black
-        }
-    }
+// --- Configuration pour les tests ---
+#[cfg(test)]
+#[no_mangle]
+pub extern "C" fn _start() -> ! {
+    kernel_main();
+    hlt_loop();
 }
 
-// Update progress indicator character
-fn update_progress_indicator(value: usize) {
+#[cfg(test)]
+fn test_main() { /* ... */ }
+
+#[cfg(test)]
+pub fn test_runner(tests: &[&dyn Fn()]) {
+    serial_println!("Running {} tests", tests.len());
+    for test in tests {
+        test();
+    }
+    exit_qemu(QemuExitCode::Success);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum QemuExitCode {
+    Success = 0x10,
+    Failed = 0x11,
+}
+
+pub fn exit_qemu(exit_code: QemuExitCode) {
+    use x86_64::instructions::port::Port;
     unsafe {
-        let vga_buffer = 0xB8000 as *mut u8;
-        let row = 23;
-        let col = 70;
-        let pos = (row * 80 + col) * 2;
-        
-        let chars = b"-\\|/";
-        let idx = value % 4;
-        
-        *vga_buffer.add(pos) = chars[idx];
-        *vga_buffer.add(pos + 1) = 0x0E; // Yellow on black
+        let mut port = Port::new(0xf4);
+        port.write(exit_code as u32);
     }
 }

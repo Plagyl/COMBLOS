@@ -1,122 +1,66 @@
-use crate::vga;
+// src/shell.rs
+
 use crate::keyboard;
+use crate::{print, println}; // Ces macros utilisent vga_buffer en interne via main.rs
+// use crate::vga_buffer; // Supprimé si non utilisé directement pour des fonctions spécifiques
 
-const MAX_COMMAND_LENGTH: usize = 64;
+const PROMPT: &str = "MONCOMBLE> ";
+const MAX_COMMAND_LEN: usize = 79;
 
-pub struct Shell {
-    prompt: &'static str,
-    command_buffer: [u8; MAX_COMMAND_LENGTH],
+pub fn shell_run() {
+    println!(); // Nouvelle ligne avant le premier prompt
+
+    let mut command_buffer: [u8; MAX_COMMAND_LEN] = [0; MAX_COMMAND_LEN];
+    // command_len sera initialisé dans la boucle
+
+    loop {
+        print!("{}", PROMPT);
+
+        let mut command_len = 0; // Initialisation de command_len ici
+        loop {
+            let ch = keyboard::read_char_blocking();
+
+            if ch == '\n' {
+                println!(); // Écho de la nouvelle ligne
+                break;
+            } else if ch == '\x08' { // Backspace
+                if command_len > 0 {
+                    command_len -= 1;
+                    // Effacement basique à l'écran
+                    print!("\x08 \x08");
+                }
+            } else if ch.is_ascii_graphic() || ch == ' ' { // Caractères imprimables et espace
+                if command_len < MAX_COMMAND_LEN -1 { // Laisse de la place (par ex. pour un nul si besoin)
+                    command_buffer[command_len] = ch as u8;
+                    command_len += 1;
+                    print!("{}", ch); // Écho du caractère
+                }
+            }
+            // Ignorer les autres caractères (contrôle, non-ascii simples, etc.)
+        }
+
+        if command_len > 0 {
+            // Convertir le buffer u8 en &str pour process_command
+            match core::str::from_utf8(&command_buffer[0..command_len]) {
+                Ok(command_str) => process_command(command_str),
+                Err(_) => println!("Erreur: Commande non UTF-8 valide."),
+            }
+        }
+    }
 }
 
-impl Shell {
-    pub fn new() -> Self {
-        Shell {
-            prompt: "MONCOMBLE> ",
-            command_buffer: [0; MAX_COMMAND_LENGTH],
-        }
-    }
-
-    pub fn run(&mut self) {
-        // Display welcome message
-        vga::println("MONCOMBLE OS Shell v0.1");
-        vga::println("Type 'help' for available commands");
-        vga::println("");
-        
-        // Main command loop
-        loop {
-            // Display prompt
-            vga::print(self.prompt);
-            
-            // Wait a moment to ensure the prompt is visible
-            self.short_delay();
-            
-            // Read command
-            let len = self.read_command();
-            
-            if len > 0 {
-                // Process command (simple version to start)
-                self.process_command(len);
-            }
-        }
-    }
-    
-    fn short_delay(&self) {
-        // Simple delay to ensure display updates in QEMU
-        for _ in 0..100000 {
-            unsafe {
-                core::arch::asm!("pause", options(nomem, nostack));
-            }
-        }
-    }
-    
-    fn read_command(&mut self) -> usize {
-        // Read input until newline
-        let mut count = 0;
-        
-        while count < MAX_COMMAND_LENGTH - 1 {
-            let ch = keyboard::read_char_blocking();
-            
-            match ch {
-                b'\n' => {
-                    self.command_buffer[count] = 0; // Null terminate
-                    vga::putchar(b'\n');
-                    return count;
-                },
-                8 => { // Backspace
-                    if count > 0 {
-                        count -= 1;
-                        // Update display
-                        vga::putchar(8);
-                        vga::putchar(b' ');
-                        vga::putchar(8);
-                    }
-                },
-                _ => {
-                    self.command_buffer[count] = ch;
-                    vga::putchar(ch);
-                    count += 1;
-                }
-            }
-        }
-        
-        self.command_buffer[count] = 0; // Null terminate
-        vga::putchar(b'\n');
-        count
-    }
-    
-    fn process_command(&self, len: usize) {
-        // Convert command to string slice for easy comparison
-        if let Ok(cmd) = core::str::from_utf8(&self.command_buffer[0..len]) {
-            match cmd {
-                "help" => {
-                    vga::println("Available commands:");
-                    vga::println("  help  - Display this help message");
-                    vga::println("  clear - Clear the screen");
-                    vga::println("  about - Display information about the OS");
-                    vga::println("  echo  - Echo text back to the screen");
-                },
-                "clear" => {
-                    vga::clear_screen();
-                },
-                "about" => {
-                    vga::println("MONCOMBLE OS v0.1");
-                    vga::println("A simple operating system written in Rust");
-                    vga::println("Built with custom bootloader and kernel");
-                },
-                "echo" => {
-                    // Simply echo back the command for now
-                    vga::println(cmd);
-                },
-                "" => {
-                    // Empty command, do nothing
-                },
-                _ => {
-                    vga::print("Unknown command: ");
-                    vga::println(cmd);
-                }
-            }
-        } else {
-            vga::println("Invalid command (non-UTF8)");
-        }
+fn process_command(command: &str) {
+    if command == "help" {
+        println!("Commandes disponibles:");
+        println!("  help   - Affiche cette aide");
+        println!("  test   - Commande de test");
+        println!("  panic  - Teste le panic handler");
+        // Ajoute d'autres commandes ici
+    } else if command == "test" {
+        println!("Ceci est une commande de test!");
+    } else if command == "panic" {
+        panic!("Test de panic demande par l'utilisateur!");
+    } else {
+        println!("Commande inconnue: '{}'", command);
     }
 }
